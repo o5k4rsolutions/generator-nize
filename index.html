@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <title>Nize Video Generator</title>
+    <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
+    <style>
+        /* Prosty styl dla podglądu i statusu */
+        #statusContainer.hidden { display: none; }
+        #progressBar { height: 20px; background: #a855f7; width: 0%; transition: width 0.2s; }
+        .progress-bg { width: 100%; background: #eee; border-radius: 10px; overflow: hidden; margin: 10px 0; }
+        canvas { max-width: 100%; height: auto; border: 1px solid #ccc; display: block; margin: 0 auto; }
+    </style>
+</head>
+<body>
+
+    <div id="dropZone">
+        <input type="file" id="fileInput" multiple accept="image/*">
+        <input type="text" id="firstText" placeholder="Twój pierwszy tekst...">
+        <button id="generateBtn">Generuj MP4</button>
+    </div>
+
+    <div id="statusContainer" class="hidden">
+        <p id="statusLabel">Przygotowanie...</p>
+        <div class="progress-bg"><div id="progressBar"></div></div>
+    </div>
+
+    <canvas id="renderCanvas" width="1080" height="1920" style="display:none;"></canvas>
+    <div id="imageList"></div>
+
+<script>
+    const { createFFmpeg, fetchFile } = FFmpeg;
+    const ffmpeg = createFFmpeg({ 
+        log: true,
+        corePath: 'https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js'
+    });
+
+    const fileInput = document.getElementById('fileInput');
+    const firstTextInput = document.getElementById('firstText');
+    const generateBtn = document.getElementById('generateBtn');
+    const statusContainer = document.getElementById('statusContainer');
+    const statusLabel = document.getElementById('statusLabel');
+    const progressBar = document.getElementById('progressBar');
+    const canvas = document.getElementById('renderCanvas');
+    const ctx = canvas.getContext('2d');
+
+    let images = [];
+    const fixedTexts = ["Szukasz więcej testów?", "To wpadaj na nasz serwer discord", "Link w bio", "Wpisz w przeglądarkę", "Discord.gg/testypl", ".gg/testypl", ".gg/testypl"];
+    
+    // --- KONFIGURACJA LOGO ---
+    const LOGO_URL = 'https://raw.githubusercontent.com/o5k4rsolutions/generator-nize/7bec06e18a8723518a9063baa6e4ae41be188331/josso/files/2026/nize-pelne.png';
+    const logoImg = new Image();
+    logoImg.crossOrigin = "anonymous"; 
+    logoImg.src = LOGO_URL;
+
+    fileInput.onchange = (e) => {
+        const files = Array.from(e.target.files);
+        files.forEach(file => {
+            const reader = new FileReader();
+            reader.onload = (event) => images.push({ src: event.target.result });
+            reader.readAsDataURL(file);
+        });
+    };
+
+    function drawFrame(imageIndex, progress, currentImg) {
+        // 1. Tło
+        ctx.fillStyle = "#000";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        // 2. Rysowanie zdjęcia (skalowanie do wypełnienia)
+        const scale = Math.max(canvas.width / currentImg.width, canvas.height / currentImg.height);
+        const x = (canvas.width - currentImg.width * scale) / 2;
+        const y = (canvas.height - currentImg.height * scale) / 2;
+        ctx.drawImage(currentImg, x, y, currentImg.width * scale, currentImg.height * scale);
+
+        // 3. Nakładka przyciemniająca
+        ctx.fillStyle = "rgba(0, 0, 0, 0.3)";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        // --- RYSOWANIE LOGO NA GÓRZE ---
+        if (logoImg.complete) {
+            const lWidth = canvas.width * 0.3; // Logo na 30% szerokości
+            const lScale = lWidth / logoImg.width;
+            const lHeight = logoImg.height * lScale;
+            const padding = 60;
+            
+            ctx.globalAlpha = 0.9;
+            ctx.drawImage(logoImg, (canvas.width - lWidth) / 2, padding, lWidth, lHeight);
+            ctx.globalAlpha = 1.0;
+        }
+
+        // 4. Teksty
+        ctx.fillStyle = "white";
+        ctx.textAlign = "center";
+        ctx.font = "bold 60px Arial";
+        
+        // Tekst dynamiczny (z inputa) na pierwszej klatce, potem z tablicy
+        const text = imageIndex === 0 ? firstTextInput.value : (fixedTexts[imageIndex - 1] || "");
+        ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+    }
+
+    async function generateVideo() {
+        if (images.length === 0) {
+            alert("Dodaj najpierw zdjęcia!");
+            return;
+        }
+        
+        // Upewnij się, że logo jest załadowane
+        if (!logoImg.complete) {
+            statusLabel.innerText = "Ładowanie logo...";
+            await new Promise(r => logoImg.onload = r);
+        }
+
+        generateBtn.disabled = true;
+        statusContainer.classList.remove('hidden');
+        
+        const fps = 30;
+        const secondsPerSlide = 2;
+        const stream = canvas.captureStream(fps);
+        
+        const recorder = new MediaRecorder(stream, {
+            mimeType: 'video/webm;codecs=vp9',
+            videoBitsPerSecond: 5000000
+        });
+
+        const chunks = [];
+        recorder.ondataavailable = e => chunks.push(e.data);
+        const recordingFinished = new Promise(resolve => recorder.onstop = resolve);
+
+        recorder.start();
+
+        for (let i = 0; i < images.length; i++) {
+            const img = await new Promise(res => {
+                const o = new Image(); o.onload = () => res(o); o.src = images[i].src;
+            });
+            
+            const totalFrames = secondsPerSlide * fps;
+            for (let f = 0; f < totalFrames; f++) {
+                drawFrame(i, f/totalFrames, img);
+                const totalProgress = ((i * totalFrames) + f) / (images.length * totalFrames) * 50;
+                progressBar.style.width = `${totalProgress}%`;
+                statusLabel.innerText = `Renderowanie: ${Math.round(totalProgress*2)}%`;
+                await new Promise(r => setTimeout(r, 1000 / fps));
+            }
+        }
+
+        recorder.stop();
+        await recordingFinished;
+
+        statusLabel.innerText = "Konwersja na MP4...";
+        if (!ffmpeg.isLoaded()) await ffmpeg.load();
+
+        const webmBlob = new Blob(chunks, { type: 'video/webm' });
+        ffmpeg.FS('writeFile', 'input.webm', await fetchFile(webmBlob));
+
+        ffmpeg.setProgress(({ ratio }) => {
+            const totalProgress = 50 + (ratio * 50);
+            progressBar.style.width = `${totalProgress}%`;
+        });
+
+        await ffmpeg.run('-i', 'input.webm', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', 'output.mp4');
+
+        const data = ffmpeg.FS('readFile', 'output.mp4');
+        const mp4Blob = new Blob([data.buffer], { type: 'video/mp4' });
+        
+        const url = URL.createObjectURL(mp4Blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `nize_video_${Date.now()}.mp4`;
+        a.click();
+        
+        statusLabel.innerText = "Gotowe!";
+        setTimeout(() => {
+            statusContainer.classList.add('hidden');
+            generateBtn.disabled = false;
+        }, 3000);
+    }
+
+    generateBtn.onclick = generateVideo;
+</script>
+</body>
+</html>
